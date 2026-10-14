@@ -60,7 +60,8 @@ def kernel_path(q_heads, kv_heads, context, head_dim, architecture):
     specialized_gqa = (gqa == 8 and head_dim in (64, 128)) or (
         gqa in (12, 16) and head_dim == 128
     )
-    if specialized_gqa and context >= 8192:
+    gqa_kernel_regresses = architecture == "applegpu_g17s"
+    if specialized_gqa and context >= 8192 and not gqa_kernel_regresses:
         return "gqa-specialized"
     return "generic-2pass"
 
@@ -109,11 +110,15 @@ def measure(q, k, v, scale, chain, warmup, iterations, rounds):
 def benchmark_shape(shape, args, architecture):
     q_heads, kv_heads, context, head_dim = shape
     scale = 1.0 / math.sqrt(head_dim)
+    dtype = {
+        "float16": mx.float16,
+        "bfloat16": mx.bfloat16,
+    }[args.dtype]
 
     mx.random.seed(args.seed)
-    q = mx.random.normal((1, q_heads, 1, head_dim)).astype(mx.float16)
-    k = mx.random.normal((1, kv_heads, context, head_dim)).astype(mx.float16)
-    v = mx.random.normal((1, kv_heads, context, head_dim)).astype(mx.float16)
+    q = mx.random.normal((1, q_heads, 1, head_dim)).astype(dtype)
+    k = mx.random.normal((1, kv_heads, context, head_dim)).astype(dtype)
+    v = mx.random.normal((1, kv_heads, context, head_dim)).astype(dtype)
     mx.eval(q, k, v)
 
     actual = mx.fast.scaled_dot_product_attention(q, k, v, scale=scale)
@@ -172,6 +177,11 @@ def main():
     parser.add_argument("--iterations", type=int, default=30)
     parser.add_argument("--rounds", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--dtype",
+        choices=("float16", "bfloat16"),
+        default="float16",
+    )
     args = parser.parse_args()
 
     shapes = args.shape or DEFAULT_SHAPES
@@ -182,7 +192,7 @@ def main():
         f"architecture={architecture}"
     )
     print(
-        f"chain={args.chain} warmup={args.warmup} "
+        f"dtype={args.dtype} chain={args.chain} warmup={args.warmup} "
         f"iterations={args.iterations} rounds={args.rounds}"
     )
     print(
